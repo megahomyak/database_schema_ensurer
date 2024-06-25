@@ -75,6 +75,8 @@ def migrate(database: Database, target_version=None, migrations_directory="migra
         max_applied_migration_version = 0
     if target_version is None:
         target_version = max(migration_versions.keys())
+    elif target_version < 1:
+        raise MigrationError("`target_version` cannot be lesser than 1")
     elif target_version not in migration_versions:
         raise MigrationError(f"Migration version not found: {target_version}")
     if max_applied_migration_version < target_version:
