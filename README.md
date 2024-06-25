@@ -16,7 +16,9 @@ class MyDatabase(Database):
     # Implement all the methods or use a library:
     # * Postgres: postgres_schema_ensurer
 
-migrate(MyDatabase(...))
-# You can also specify `target_version=` if you want a specific version,
-# And you may also specify `migrations_directory` to change the directory the migrations are found at
+migrate(
+    MyDatabase(...),
+    target_version=OPTIONAL_SPECIFIC_VERSION, # Default: greatest version from the directory
+    migrations_directory=OPTIONAL_SPECIFIC_DIRECTORY, # Default: "migrations"
+)
 ```
