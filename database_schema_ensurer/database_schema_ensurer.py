@@ -23,14 +23,22 @@ class MigrationError(Exception):
 def _scan(directory):
     versions = {}
     file_names = set(os.listdir(directory))
+    visited = set()
     for file_name in file_names:
-        if file_name.endswith(".up.sql"):
+        if file_name.endswith(".sql"):
+            if file_name.endswith(".up.sql"):
+                up_file_name = file_name
+                down_file_name = file_name[:-len(".up.sql")] + ".down.sql"
+                if down_file_name not in file_names:
+                    raise MigrationError(f"No `.down.sql` pair found for: {up_file_name}")
+            elif file_name.endswith(".down.sql"):
+                down_file_name = file_name
+                up_file_name = file_name[:-len(".down.sql")] + ".up.sql"
+                if up_file_name not in file_names:
+                    raise MigrationError(f"No `.up.sql` pair found for: {down_file_name}")
             version = file_name.split("_", 1)
-            down_file_name = file_name[:-len(".up.sql")] + ".down.sql"
-            if down_file_name not in file_names:
-                raise MigrationError(f"No `.down.sql` pair found for: {file_name}")
             versions[int(version)] = SimpleNamespace(
-                up_file_name=file_name,
+                up_file_name=up_file_name,
                 down_file_name=down_file_name,
             )
     if not versions:
