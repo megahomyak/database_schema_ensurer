@@ -22,12 +22,16 @@ class MigrationError(Exception):
 
 def _scan(directory):
     versions = {}
-    for file_name in os.listdir(directory):
+    file_names = set(os.listdir(directory))
+    for file_name in file_names:
         if file_name.endswith(".up.sql"):
             version = file_name.split("_", 1)
+            down_file_name = file_name[:-len(".up.sql")] + ".down.sql"
+            if down_file_name not in file_names:
+                raise MigrationError(f"No `.down.sql` pair found for: {file_name}")
             versions[int(version)] = SimpleNamespace(
                 up_file_name=file_name,
-                down_file_name=file_name[:-len(".up.sql")] + ".down.sql"
+                down_file_name=down_file_name,
             )
     if not versions:
         raise MigrationError(f"Migrations directory is empty")
