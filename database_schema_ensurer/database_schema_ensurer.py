@@ -1,153 +1,94 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
-from dataclasses import dataclass
 import os
+from types import SimpleNamespace
+from dataclasses import dataclass
+from typing import Optional
+
+# THAT'S THE ENTIRE LIB:
+# migrate(down) => tearing down using saved SQL, then deleting entries
+# migrate(up) => building up using external SQL, then adding entries, then adding to cache (if the flag is set)
+# migrate(same) => no action
+# migrate(some, db not prepared) => ~~cache~~ OR incremental "up" ;; CACHE WILL BE LATER! OPTIMIZATIONS WILL BE LATER!
 
 
-class NotFound(Exception):
+def _read(file_path):
+    with open(file_path, encoding="utf-8") as f:
+        return f.read()
+
+
+class MigrationError(Exception):
     pass
 
 
-class AlreadyExists(Exception):
-    pass
-
-
-class FileNameCollision(Exception):
-    pass
-
-
-@dataclass
-class InvalidMigrationFileName(Exception):
-    file_name: str
-
-
-@dataclass
-class MigrationFileNotFound(Exception):
-    pair_file_name: str
-
-
-@dataclass
-class VersionSkipped(Exception):
-    version: int
-
-
-_Version = int
-
-
-@dataclass
-class _Migration:
-    up_sql: str
-    down_sql: str
-
-
-@dataclass
-class SchemaUpdateRecord:
-    """
-    A record of when the schema was updated, including the version number (`version`) and the code needed to downgrade to the previous version of the schema (`downgrade_sql`)
-    """
-    version: int
-    downgrade_sql: str
-
-
-_UP_SQL = ".up.sql"
-def _read_migrations(directory: str) -> Dict[_Version, _Migration]:
-    versions: Dict[_Version, _Migration] = {}
+def _scan(directory):
+    versions = {}
     for file_name in os.listdir(directory):
-        if file_name.endswith(_UP_SQL):
-            try:
-                version_number, _ = file_name.split("_", 1)
-                version_number = int(version_number)
-                if version_number < 1:
-                    raise ValueError
-            except ValueError:
-                raise InvalidMigrationFileName(file_name)
-            up_file_name = file_name
-            down_file_name = up_file_name[:-len(_UP_SQL)] + ".down.sql"
-            with open(up_file_name, encoding="utf-8") as f:
-                up_file_sql = f.read()
-            try:
-                with open(down_file_name, encoding="utf-8") as f:
-                    down_file_sql = f.read()
-            except FileNotFoundError:
-                raise MigrationFileNotFound(pair_file_name=down_file_name)
-            if version_number in versions:
-                raise InvalidMigrationFileName()
-            versions[version_number] = _Migration(
-                up_sql=up_file_sql,
-                down_sql=down_file_sql,
+        if file_name.endswith(".up.sql"):
+            version = file_name.split("_", 1)
+            versions[int(version)] = SimpleNamespace(
+                up_file_name=file_name,
+                down_file_name=file_name[:-len(".up.sql")] + ".down.sql"
             )
-    current_version = 1
-    for version in sorted(versions.keys()):
-        if version == current_version:
-            current_version += 1
-        else:
-            raise VersionSkipped(current_version)
+    if not versions:
+        raise MigrationError(f"Migrations directory is empty")
+    sorted_versions = sorted(versions.keys())
+    if sorted_versions[1] != 1:
+        raise MigrationError(f"Migration versions must start with \"1\", not \"{sorted_versions[1]}\"")
+    for a, b in zip(sorted_versions, sorted_versions[1:]):
+        if a + 1 != b:
+            raise MigrationError(f"Migration version skipped: {a + 1}")
     return versions
 
 
-class Ensurer(ABC):
-    """
-    A note for implementors: please, allow the user to specify where the migration records will be stored. I don't want the users to have stupid collisions because of this library
-    """
+@dataclass
+class MigrationRecord:
+    down_sql: str
+    version: int
 
-    def migrate(self, target_version: Optional[int] = None, migrations_directory: str = "migrations") -> None:
-        """
-        `target_version` is the desired schema version (the version you want to have after running this function).
 
-        If `target_version` is `None`, the last accessible version (from the migrations directory) is chosen
-        """
-        migrations = _read_migrations(migrations_directory)
-        try:
-            latest_schema_update_record = self.get_schema_update_record_with_greatest_version()
-        except NotFound:
-            if migrations:
-                pass # TODO try to load from cache
-            else:
-                raise NotFound("No migration files are present, cannot migrate")
-        else:
-            schema_version = schema_row.version
-        if schema_version == target_version:
-            return
-        elif schema_row.version > target_version:
-            # We need to downgrade
-
-        elif schema_row.version < target_version:
-            # We need to upgrade
-
+class Database(ABC):
     @abstractmethod
-    def execute_sql(self, sql: str) -> None:
-        """
-        Might raise any database-specific errors
-        """
+    def get_max_migration_version(self) -> Optional[int]:
         pass
 
     @abstractmethod
-    def get_schema_update_record_with_greatest_version(self) -> SchemaUpdateRecord:
-        """
-        Must raise `NotFound` (from this module) when the entry is not found (that is, there are no entries at all yet); might raise any database-specific errors
-        """
+    def get_migration(self, version: int) -> MigrationRecord:
         pass
 
     @abstractmethod
-    def get_schema_update_record(self, version: int) -> SchemaUpdateRecord:
-        """
-        Must raise `NotFound` (from this module) when the entry is not found; might raise any database-specific errors
-        """
+    def add_migration(self, migration: MigrationRecord):
         pass
 
     @abstractmethod
-    def remove_schema_update_record(self, version: int):
-        """
-        Must raise `NotFound` (from this module) when the entry is not found; might raise any database-specific errors
-        """
+    def delete_migration(self, version: int):
         pass
 
     @abstractmethod
-    def add_schema_update_record(self, schema_update_record: SchemaUpdateRecord) -> int:
-        """
-        Might raise any database-specific errors. If a record with the specified version number already exists, this function must raise `AlreadyExists` (from this module)
-        """
+    def execute_sql(self, sql: str):
         pass
 
 
-class PostgresEnsurer(Ensurer):
+def migrate(database: Database, target_version=None, migrations_directory="migrations"):
+    max_applied_migration_version = database.get_max_migration_version()
+    migration_versions = _scan(migrations_directory)
+    if max_applied_migration_version is None:
+        max_applied_migration_version = 0
+    if target_version is None:
+        target_version = max(migration_versions.keys())
+    elif target_version not in migration_versions:
+        raise MigrationError(f"Migration version not found: {target_version}")
+    if max_applied_migration_version < target_version:
+        # Building up using external SQL, then adding entries, then adding to cache (if the flag is set)
+        for version in range(max_applied_migration_version + 1, target_version + 1):
+            migration = migration_versions[version]
+            database.execute_sql(_read(migration.up_file_name))
+            database.add_migration(MigrationRecord(
+                down_sql=_read(migration.down_file_name),
+                version=version,
+            ))
+    elif max_applied_migration_version > target_version:
+        # Tearing down using saved SQL, then deleting entries
+        for version in range(max_applied_migration_version, target_version, -1):
+            migration_record = database.get_migration(max_applied_migration_version)
+            database.execute_sql(migration_record.down_sql)
+            database.delete_migration(migration_record.version)
