@@ -2,6 +2,10 @@
 
 Ensures that the database schema is at a certain version.
 
+## Installation
+
+`pip install database_schema_ensurer`
+
 ## Usage
 
 Put your migrations in a directory. Each migration SQL file name must obey these rules:
